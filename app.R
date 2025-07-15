@@ -18,9 +18,10 @@ library(jsonlite) # For credentials
 # Create credentials encrypted self-hosted file
 if (FALSE) {
   creds <- data.frame(user = "xxx", pass = "xxx")
-  write_encrypted(creds, "creds.enc")
-  # Sys.setenv("LARES_ENC" = "8c92d43284bb55b9f3e3010e5c4ca...")
-  creds <- fromJSON(read_encrypted("creds.enc", Sys.getenv("LARES_ENC")))
+  my_enc <- lares::get_creds("encrypted")$lares_key
+  Sys.setenv("LARES_ENC" = my_enc)
+  write_encrypted(creds, "creds.enc", key = my_enc)
+  creds <- fromJSON(read_encrypted("creds.enc", my_enc))
 }
 
 # Set up future for asynchronous processing
@@ -176,6 +177,7 @@ server <- function(input, output, session) {
     users = creds$user,
     pwds = creds$pass,
     style = list(botton_txt_colour = "#FFF", botton_bgd_colour = "#000"),
+    logo = "icon.png",
     lang = "en"
   )
   observe({
