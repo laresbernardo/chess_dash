@@ -15,11 +15,12 @@ library(purrr) # For purrr::partial, used in querychat_init
 library(lareshiny) # For login
 library(jsonlite) # For credentials
 
+# Create credentials encrypted self-hosted file
 if (FALSE) {
   creds <- data.frame(user = "xxx", pass = "xxx")
   write_encrypted(creds, "creds.enc")
   # Sys.setenv("LARES_ENC" = "8c92d43284bb55b9f3e3010e5c4ca...")
-  creds <- jsonlite::fromJSON(read_encrypted("creds.enc", Sys.getenv("LARES_ENC"))) 
+  creds <- fromJSON(read_encrypted("creds.enc", Sys.getenv("LARES_ENC")))
 }
 
 # Set up future for asynchronous processing
@@ -178,7 +179,9 @@ server <- function(input, output, session) {
     lang = "en"
   )
   observe({
-    if (login$authenticated) message("We are in!")
+    if (login$authenticated) {
+      message("User logged in successfully: ", login$user)
+    }
   })
   
   rv <- reactiveValues(
