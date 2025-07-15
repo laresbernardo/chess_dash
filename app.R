@@ -38,11 +38,11 @@ generate_month_ranges <- function(start_date, end_date) {
   start_month <- as.numeric(format(start_date, "%m"))
   end_year <- as.numeric(format(end_date, "%Y"))
   end_month <- as.numeric(format(end_date, "%m"))
-  
+
   ranges <- c()
   current_year <- start_year
   current_month <- start_month
-  
+
   while (current_year < end_year || (current_year == end_year && current_month <= end_month)) {
     ranges <- c(ranges, sprintf("%d/%02d", current_year, current_month))
     current_month <- current_month + 1
@@ -102,12 +102,10 @@ global_data_description <- paste0(
 # Define UI for the application
 ui <- fluidPage(
   theme = bs_theme(bootswatch = "flatly", font_scale = 0.9),
-  
   titlePanel(
     title = NULL,
     windowTitle = "Chess.com Dashboard"
   ),
-  
   sidebarLayout(
     sidebarPanel(
       h4("Player Information"),
@@ -149,7 +147,6 @@ ui <- fluidPage(
       # error_message is still useful for persistent errors
       hr(), uiOutput("error_message")
     ),
-    
     mainPanel(
       tabsetPanel(
         id = "tabs",
@@ -166,10 +163,10 @@ ui <- fluidPage(
           uiOutput("recent_games_content")
         ),
         tabPanel(
-          "QueryChat",
+          "AI Assistant",
           icon = icon("comments"),
           br(),
-          h3("Interact with your Chess.com data and dashboards"),
+          h3("Interact with your data and dashboards"),
           querychat_ui("chess_chat")
         )
       )
@@ -179,28 +176,28 @@ ui <- fluidPage(
 
 # Define server logic
 server <- function(input, output, session) {
-  
   creds <- fromJSON(read_encrypted("creds.enc", Sys.getenv("LARES_ENC")))
   login <- module_login(
-    input, session, personal = "",
+    input, session,
     users = creds$user,
     pwds = creds$pass,
     style = list(botton_txt_colour = "#FFF", botton_bgd_colour = "#000"),
     logo = "icon.png",
-    lang = "en"
+    lang = "en",
+    personal = "Bernardos-MacBook-Pro.local"
   )
   observe({
     if (login$authenticated) {
       message("User logged in successfully: ", login$user)
     }
   })
-  
+
   rv <- reactiveValues(
     processed_games = NULL,
     loading = FALSE,
     error = NULL
   )
-  
+
   # Conditionally render dateRangeInput based on radio button selection
   output$date_range_ui <- renderUI({
     if (input$data_fetch_option == "range") {
@@ -214,7 +211,7 @@ server <- function(input, output, session) {
       )
     }
   })
-  
+
   # Reactive expression to get cached usernames
   cached_users <- reactive({
     cache_files <- list.files(cache_dir, pattern = "\\.rds$", full.names = FALSE)
@@ -227,7 +224,7 @@ server <- function(input, output, session) {
       return(NULL)
     }
   })
-  
+
   # Render cache information
   output$cache_info <- renderUI({
     caches <- lares::cache_exists(cache_dir = cache_dir)
@@ -240,7 +237,7 @@ server <- function(input, output, session) {
       tagList(p("No cached data available."))
     }
   })
-  
+
   # Observe event for resetting cache
   observeEvent(input$reset_cache, {
     showNotification("Clearing cache...", type = "warning", duration = 3)
@@ -253,14 +250,14 @@ server <- function(input, output, session) {
       tagList(p("No cached data available."))
     })
   })
-  
+
   observeEvent(input$fetch_data, {
     req(input$chess_username)
-    
+
     rv$loading <- TRUE
     rv$error <- NULL
     rv$processed_games <- NULL # Clear previous data
-    
+
     # Show loading notification
     id <- showNotification(
       HTML('<i class="fas fa-spinner fa-spin"></i> Fetching data...'),
@@ -268,12 +265,12 @@ server <- function(input, output, session) {
       type = "warning",
       closeButton = FALSE
     )
-    
+
     current_username <- input$chess_username
     fetch_option <- input$data_fetch_option
     selected_start_date <- if (fetch_option == "range") input$date_range[1] else as.Date("1970-01-01") # If 'all', use a very old date
     selected_end_date <- if (fetch_option == "range") input$date_range[2] else Sys.Date() # If 'all', use today's date
-    
+
     # Construct a cache key based on username and the effective date range for the data
     # For "all" games, we'll cache the entire dataset and then filter it.
     # The cache key needs to reflect the content of the cached file.
@@ -284,7 +281,7 @@ server <- function(input, output, session) {
     } else {
       paste0(current_username, "_", format(selected_start_date, "%Y%m%d"), "_", format(selected_end_date, "%Y%m%d"))
     }
-    
+
     future_promise({
       fetched_data <- NULL
       # Check cache first
@@ -294,36 +291,42 @@ server <- function(input, output, session) {
       } else {
         message(sprintf("Fetching data for %s (option: %s)...", current_username, fetch_option))
         if (fetch_option == "all") {
-          fetched_data <- tryCatch({
-            chessPI.pull(current_username, range = "all")
-          }, error = function(e) {
-            message(sprintf("Error fetching 'all' data for %s: %s", current_username, e$message))
-            return(NULL)
-          })
+          fetched_data <- tryCatch(
+            {
+              chessPI.pull(current_username, range = "all")
+            },
+            error = function(e) {
+              message(sprintf("Error fetching 'all' data for %s: %s", current_username, e$message))
+              return(NULL)
+            }
+          )
         } else { # fetch_option == "range"
           month_ranges_to_fetch <- generate_month_ranges(selected_start_date, selected_end_date)
           all_monthly_games <- list()
           for (month_range in month_ranges_to_fetch) {
-            monthly_games <- tryCatch({
-              chessPI.pull(current_username, range = month_range)
-            }, error = function(e) {
-              message(sprintf("Error fetching data for %s/%s: %s", current_username, month_range, e$message))
-              return(NULL)
-            })
+            monthly_games <- tryCatch(
+              {
+                chessPI.pull(current_username, range = month_range)
+              },
+              error = function(e) {
+                message(sprintf("Error fetching data for %s/%s: %s", current_username, month_range, e$message))
+                return(NULL)
+              }
+            )
             if (!is.null(monthly_games)) {
               all_monthly_games[[month_range]] <- monthly_games
             }
           }
           fetched_data <- bind_rows(all_monthly_games)
         }
-        
+
         # If data was fetched, cache it before processing
         if (!is.null(fetched_data) && nrow(fetched_data) > 0) {
           cache_write(fetched_data, base = cache_key, cache_dir = cache_dir)
           message(sprintf("Data for %s cached successfully: %s", current_username, cache_key))
         }
       }
-      
+
       processed_data <- NULL
       if (!is.null(fetched_data) && nrow(fetched_data) > 0) {
         processed_data <- fetched_data %>%
@@ -345,45 +348,51 @@ server <- function(input, output, session) {
           arrange(desc(games.end_time))
       }
       list(data = processed_data, error = NULL)
-    }) %...>% {
-      rv$processed_games <- .$data
-      rv$error <- .$error
-      rv$loading <- FALSE
-      removeNotification(id) # Remove loading notification
-      querychat_config_global <- querychat_init(
-        df = rv$processed_games,
-        table_name = "chess_games_data",
-        greeting = "Ask my anything related to your chess.com games...",
-        data_description = global_data_description,
-        create_chat_func = purrr::partial(
-          ellmer::chat_openai,
-          model = "gpt-4.1",
-          api_key = Sys.getenv("OPENAI_API") # Ensure API key is set as env var
-        )
-      )
-      rv$querychat <- querychat_server("chess_chat", querychat_config_global)
-      if (is.null(rv$processed_games) || nrow(rv$processed_games) == 0) {
-        rv$error <- "No games found for the selected username and date range."
-      }
-        
-      caches <- lares::cache_exists(cache_dir = cache_dir)
-      output$cache_info <- renderUI({
-        users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
-        if (!is.null(users)) {
-          tagList(
-            p(HTML(paste0("<b>Cache available for users / date ranges:</b> ", paste(users, collapse = ", ")))),
+    }) %...>%
+      {
+        rv$processed_games <- .$data
+        rv$error <- .$error
+        rv$loading <- FALSE
+        removeNotification(id) # Remove loading notification
+        querychat_config_global <- querychat_init(
+          df = rv$processed_games,
+          table_name = "chess_games_data",
+          greeting = "Ask my anything related to your chess.com games...",
+          data_description = global_data_description,
+          create_chat_func = purrr::partial(
+            ellmer::chat_openai,
+            model = "gpt-4.1",
+            api_key = Sys.getenv("OPENAI_API") # Ensure API key is set as env var
           )
-        } else {
-          tagList(p("No cached data available."))
+        )
+        rv$querychat <- querychat_server("chess_chat", querychat_config_global)
+        if (is.null(rv$processed_games) || nrow(rv$processed_games) == 0) {
+          rv$error <- "No games found for the selected username and date range."
         }
-      })
-    } %...!% {
-      rv$error <- "An unexpected error occurred during data fetching. Please check the username or try again later."
-      rv$loading <- FALSE
-      removeNotification(id) # Remove loading notification on error
+
+        caches <- lares::cache_exists(cache_dir = cache_dir)
+        output$cache_info <- renderUI({
+          users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
+          if (!is.null(users)) {
+            tagList(
+              p(HTML(paste0("<b>Cache available for users / date ranges:</b> ", paste(users, collapse = ", ")))),
+            )
+          } else {
+            tagList(p("No cached data available."))
+          }
+        })
+      } %...!% {
+        rv$error <- "An unexpected error occurred during data fetching. Please check the username or try again later."
+        rv$loading <- FALSE
+        removeNotification(id) # Remove loading notification on error
+      }
+    if (cache_exists(base = cache_key, cache_dir = cache_dir)) {
+      showNotification(sprintf(
+        "Data for %s read from cache", cache_key
+      ), type = "default", duration = 3)
     }
   })
-  
+
   output$error_message <- renderUI({
     if (!is.null(rv$error)) {
       div(
@@ -393,9 +402,9 @@ server <- function(input, output, session) {
       )
     }
   })
-  
+
   # --- UI elements that depend on fetched data ---
-  
+
   output$overview_content <- renderUI({
     req(rv$processed_games)
     req(nrow(rv$processed_games) > 0)
@@ -423,7 +432,7 @@ server <- function(input, output, session) {
       plotOutput("rating_diff_plot", height = "400px")
     )
   })
-  
+
   output$recent_games_content <- renderUI({
     req(rv$processed_games)
     req(nrow(rv$processed_games) > 0)
@@ -431,7 +440,7 @@ server <- function(input, output, session) {
       DTOutput("recent_games_table", width = "100%")
     )
   })
-  
+
   output$latest_rating_box <- renderUI({
     latest_rating <- rv$querychat$df()$user_rating[1]
     div(
@@ -440,7 +449,7 @@ server <- function(input, output, session) {
       p("Latest rating*")
     )
   })
-  
+
   output$total_games_box <- renderUI({
     total_games <- nrow(rv$querychat$df())
     div(
@@ -449,14 +458,15 @@ server <- function(input, output, session) {
       p("Total games played*")
     )
   })
-  
+
   observe({
     req(rv$querychat)
     if (is.null(rv$querychat$title())) {
       if (nrow(rv$querychat$df()) >= 1) {
         date_range <- range(as.Date(rv$querychat$df()$games.end_time))
         output$chat_title <- renderText(paste(
-          "*From available data, within date range:", paste(unique(date_range), collapse = " to ")))
+          "*From available data, within date range:", paste(unique(date_range), collapse = " to ")
+        ))
       } else {
         output$chat_title <- renderText("*Within selected date range")
       }
@@ -464,7 +474,7 @@ server <- function(input, output, session) {
       output$chat_title <- renderText(paste0("*", rv$querychat$title()))
     }
   })
-  
+
   output$rating_evolution_plot <- renderPlot({
     plot_data <- rv$querychat$df() %>%
       filter(!is.na(user_win)) %>%
@@ -478,10 +488,12 @@ server <- function(input, output, session) {
       facet_grid(games.time_control ~ .) +
       labs(
         title = "Rating Evolution in Chess.com",
-        subtitle = sprintf("Player: %s | Period: %s to %s",
-                           input$chess_username,
-                           format(min(plot_data$games.end_time), "%Y-%m-%d"), # Use actual min/max of filtered data
-                           format(max(plot_data$games.end_time), "%Y-%m-%d")),
+        subtitle = sprintf(
+          "Player: %s | Period: %s to %s",
+          input$chess_username,
+          format(min(plot_data$games.end_time), "%Y-%m-%d"), # Use actual min/max of filtered data
+          format(max(plot_data$games.end_time), "%Y-%m-%d")
+        ),
         y = "Rating",
         x = "Game Number (Chronological)"
       ) +
@@ -490,7 +502,7 @@ server <- function(input, output, session) {
       theme_lares(legend = "top") +
       theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
   })
-  
+
   output$rating_diff_plot <- renderPlot({
     ggplot(rv$querychat$df(), aes(x = rating_diff, fill = games.rated)) +
       geom_histogram(bins = 60, color = "white", alpha = 0.8) +
@@ -498,7 +510,7 @@ server <- function(input, output, session) {
       geom_vline(xintercept = 0, alpha = 0.6, linetype = "dotted", color = "darkgrey") +
       labs(
         title = "Difference in Ratings Between Players",
-        subtitle = sprintf("Player: %s | Positive means you played higher rated opponents", input$chess_username),
+        subtitle = sprintf("Player: %s | Negative means you played higher rated opponents", input$chess_username),
         x = "Your Rating - Opponent's Rating",
         y = "Number of Games",
         fill = "Rated Game"
@@ -507,11 +519,12 @@ server <- function(input, output, session) {
       theme_lares(legend = "top") +
       theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
   })
-  
+
   output$recent_games_table <- renderDT({
     df <- rv$querychat$df()
     colnames(df) <- stringr::str_to_title(
-      gsub("_", " ", cleanNames(gsub("games.", "", colnames(df)))))
+      gsub("_", " ", cleanNames(gsub("games.", "", colnames(df))))
+    )
     df %>%
       mutate(
         `End Time` = format(`End Time`, "%Y-%m-%d %H:%M"),
@@ -524,13 +537,13 @@ server <- function(input, output, session) {
           pageLength = 10,
           scrollX = TRUE,
           autoWidth = TRUE,
-          dom = 'Bfrtip',
-          buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
+          dom = "Bfrtip",
+          buttons = c("copy", "csv", "excel", "pdf", "print")
         ),
         escape = FALSE,
         rownames = FALSE,
-        filter = 'top',
-        selection = 'none'
+        filter = "top",
+        selection = "none"
       )
   })
 }
