@@ -132,6 +132,15 @@ ui <- fluidPage(
         class = "btn-primary"
       ),
       hr(),
+      # Cache information and reset button
+      uiOutput("cache_info"), # Placeholder for cache info
+      actionButton(
+        inputId = "reset_cache",
+        label = "Reset Cache",
+        icon = icon("broom"),
+        class = "btn-danger"
+      ),
+      hr(),
       helpText(
         "Note: 'Fetch All Games' may take a while for users with many games. ",
         "If 'Select Date Range' is chosen, only games within that period will be fetched and displayed.",
@@ -206,6 +215,45 @@ server <- function(input, output, session) {
     }
   })
   
+  # Reactive expression to get cached usernames
+  cached_users <- reactive({
+    cache_files <- list.files(cache_dir, pattern = "\\.rds$", full.names = FALSE)
+    # Extract usernames from cache file names (e.g., "username_all.rds" or "username_20230101_20240101.rds")
+    # This regex is simplified and assumes format "username_all" or "username_YYYYMMDD_YYYYMMDD"
+    unique_usernames <- unique(gsub("_(all|\\d{8}_\\d{8})\\.rds$", "", cache_files))
+    if (length(unique_usernames) > 0) {
+      return(sort(unique_usernames))
+    } else {
+      return(NULL)
+    }
+  })
+  
+  # Render cache information
+  output$cache_info <- renderUI({
+    caches <- lares::cache_exists(cache_dir = cache_dir)
+    if (isTRUE(caches)) {
+      users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
+      tagList(
+        p(HTML(paste0("<b>Cache available for users / date ranges:</b> ", paste(users, collapse = ", "))))
+      )
+    } else {
+      tagList(p("No cached data available."))
+    }
+  })
+  
+  # Observe event for resetting cache
+  observeEvent(input$reset_cache, {
+    showNotification("Clearing cache...", type = "warning", duration = 3)
+    lares::cache_clear(cache_dir = cache_dir)
+    rv$processed_games <- NULL # Clear current displayed data
+    rv$error <- NULL # Clear any error messages
+    showNotification("Cache cleared!", type = "default", duration = 3)
+    # Re-render cache info after clearing
+    output$cache_info <- renderUI({
+      tagList(p("No cached data available."))
+    })
+  })
+  
   observeEvent(input$fetch_data, {
     req(input$chess_username)
     
@@ -229,7 +277,6 @@ server <- function(input, output, session) {
     # Construct a cache key based on username and the effective date range for the data
     # For "all" games, we'll cache the entire dataset and then filter it.
     # The cache key needs to reflect the content of the cached file.
-    # Let's simplify the cache key to represent the *initial fetch*, not the final filtered view.
     # If fetch_option is "all", the key is "username_all".
     # If fetch_option is "range", the key is "username_startdate_enddate".
     cache_key <- if (fetch_option == "all") {
@@ -243,6 +290,7 @@ server <- function(input, output, session) {
       # Check cache first
       if (cache_exists(base = cache_key, cache_dir = cache_dir)) {
         fetched_data <- cache_read(base = cache_key, cache_dir = cache_dir)
+        message(sprintf("Data for %s read from cache: %s", current_username, cache_key))
       } else {
         message(sprintf("Fetching data for %s (option: %s)...", current_username, fetch_option))
         if (fetch_option == "all") {
@@ -317,6 +365,18 @@ server <- function(input, output, session) {
       if (is.null(rv$processed_games) || nrow(rv$processed_games) == 0) {
         rv$error <- "No games found for the selected username and date range."
       }
+        
+      caches <- lares::cache_exists(cache_dir = cache_dir)
+      output$cache_info <- renderUI({
+        users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
+        if (!is.null(users)) {
+          tagList(
+            p(HTML(paste0("<b>Cache available for users / date ranges:</b> ", paste(users, collapse = ", ")))),
+          )
+        } else {
+          tagList(p("No cached data available."))
+        }
+      })
     } %...!% {
       rv$error <- "An unexpected error occurred during data fetching. Please check the username or try again later."
       rv$loading <- FALSE
@@ -398,10 +458,10 @@ server <- function(input, output, session) {
         output$chat_title <- renderText(paste(
           "*From available data, within date range:", paste(unique(date_range), collapse = " to ")))
       } else {
-        output$chat_title <- renderText("*Within selected date range") 
+        output$chat_title <- renderText("*Within selected date range")
       }
     } else {
-      output$chat_title <- renderText(paste0("*", rv$querychat$title())) 
+      output$chat_title <- renderText(paste0("*", rv$querychat$title()))
     }
   })
   
