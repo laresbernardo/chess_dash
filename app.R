@@ -56,17 +56,21 @@ generate_month_ranges <- function(start_date, end_date) {
 
 global_data_description <- paste0(
   "Your name is 'Chess Insights AI'. You are an AI assistant specialized in analyzing Chess.com game data. ",
-  "The table 'chess_games_data' contains a player's Chess.com game history with other real players. ",
+  "The data contains a player's chess game history with other real players. ",
   "Here's a description of the columns provided:\n",
   "- `games.uuid`: A unique identifier for each game provided by Chess.com.\n",
   "- `game_number`: A unique, sequential identifier for each game, where 1 is the first available game.\n",
   "- `games.end_time`: The date and time when the game ended.\n",
   "- `games.eco`: The ECO (Encyclopedia of Chess Openings) code and name for the opening played in the game.\n",
+  "- `turns`: Number of turns per player, as in times each player moved pieces.\n",
   "- `user_color`: The color (white or black) the player used in that specific game.\n",
   "- `user_result`: The outcome of the game from the player's perspective (e.g., 'win', 'checkmated', 'resigned', 'draw').\n",
   "- `user_rating`: The player's rating at the end of this game.\n",
   "- `opponent_rating`: The opponent's rating at the end of this game.\n",
   "- `rating_diff`: The difference between the player's rating and the opponent's rating (`user_rating - opponent_rating`). Positive means the player had a higher rating than the opponent.\n",
+  "- `user_accuracy`: The accuracy of the user's moves in the game.\n",
+  "- `opponent_accuracy`: The accuracy of the opponent user's moves in the game.\n",
+  "- `accuracy_diff`: user_accuracy - opponent_accuracy.\n",
   "- `user_win`: A logical value indicating if the player won the game (`TRUE` for win, `FALSE` for loss, `NA` for draws or other non-win/loss results).\n",
   "- `games.rated`: A logical value indicating if the game was rated (`TRUE`) or unrated (`FALSE`).\n",
   "- `games.url`: The URL to the game on Chess.com.\n",
@@ -93,11 +97,31 @@ global_data_description <- paste0(
   "When answering questions, focus on providing insights and summaries based on this data. ",
   "You can calculate win rates, average ratings, analyze performance against different rating ranges, ",
   "identify common openings, etc. If the user asks for data not present in this table, state that you cannot provide it. ",
-  "In the queries, always use double quotes when calling column names given some of them have dots.",
+  "In the queries, always use double quotes when calling column names given some of them have dots. ",
   "Avoid providing very long lists of raw data. Summarize when possible. ",
   "When referring to numerical values, use appropriate rounding or abbreviations if they are very large. ",
-  "For counters, use integers without decimals."
+  "For counters, use integers without decimals. "
 )
+
+pgn2data <- function(games.pgn, format = "json") {
+  lapply(games.pgn, function(x) {
+    game <- data.frame(stringr::str_split(
+      gsub("%clk ", "", stringr::str_split(x, "\n\n1. | \\d+... | \\d+. ")[[1]][-1]),
+      " ",
+      simplify = TRUE
+    )[, -3])
+    colnames(game) <- c("move", "timer")
+    game$timer <- gsub("\\{\\[|\\]\\}", "", game$timer)
+    game$turn <- rep(seq(1, 1 + nrow(game) / 2, by = 1), each = 2)[1:nrow(game)]
+    game$color <- rep(c("white", "black"), length = nrow(game))
+    if (format == "json") {
+      jsonlite::toJSON(game)
+    } else {
+      game
+    }
+  })
+}
+
 
 # Define UI for the application
 ui <- fluidPage(
@@ -163,11 +187,10 @@ ui <- fluidPage(
           uiOutput("recent_games_content")
         ),
         tabPanel(
-          "AI Assistant",
+          "Chess Insights AI",
           icon = icon("comments"),
           br(),
-          h3("Interact with your data and dashboards"),
-          querychat_ui("chess_chat")
+          uiOutput("chat_content")
         )
       )
     )
@@ -231,7 +254,7 @@ server <- function(input, output, session) {
     if (isTRUE(caches)) {
       users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
       tagList(
-        p(HTML(paste0("<b>Cache available for users / date ranges:</b> ", paste(users, collapse = ", "))))
+        p(HTML(paste0("<b>Cache available for users/dates:</b> ", paste(users, collapse = ", "))))
       )
     } else {
       tagList(p("No cached data available."))
@@ -334,11 +357,15 @@ server <- function(input, output, session) {
             game_number = rev(row_number()),
             games.end_time = as.POSIXct(games.end_time, origin = "1970-01-01", tz = "UTC"),
             games.eco = gsub("-|\\.|\\.\\.\\.", " ", gsub(".*openings/", "", games.eco)),
+            turns = unlist(lapply(pgn2data(games.pgn, "df"), function(x) nrow(x) / 2)),
             user_color = ifelse(games.white$username == current_username, "white", "black"),
             user_result = ifelse(user_color == "white", games.white$result, games.black$result),
             user_rating = ifelse(user_color == "white", games.white$rating, games.black$rating),
             opponent_rating = ifelse(user_color == "white", games.black$rating, games.white$rating),
             rating_diff = user_rating - opponent_rating,
+            user_accuracy = round(ifelse(user_color == "white", games.accuracies$white, games.accuracies$black), 2),
+            opponent_accuracy = round(ifelse(user_color == "white", games.accuracies$black, games.accuracies$white), 2),
+            accuracy_diff = round(user_accuracy - opponent_accuracy, 2),
             user_win = case_when(
               .data$user_result %in% c("win") ~ TRUE,
               .data$user_result %in% c("checkmated", "resigned", "timeout", "timevsinsufficient") ~ FALSE,
@@ -357,12 +384,16 @@ server <- function(input, output, session) {
         querychat_config_global <- querychat_init(
           df = rv$processed_games,
           table_name = "chess_games_data",
-          greeting = "Ask my anything related to your chess.com games...",
+          greeting = "Ask Chess Insights AI anything related to your games...",
           data_description = global_data_description,
+          # create_chat_func = purrr::partial(
+          #   ellmer::chat_openai,
+          #   model = "gpt-4.1",
+          #   api_key = Sys.getenv("OPENAI_API") # Ensure API key is set as env var
+          # )
           create_chat_func = purrr::partial(
-            ellmer::chat_openai,
-            model = "gpt-4.1",
-            api_key = Sys.getenv("OPENAI_API") # Ensure API key is set as env var
+            ellmer::chat_ollama,
+            model = "llama3.2"
           )
         )
         rv$querychat <- querychat_server("chess_chat", querychat_config_global)
@@ -375,7 +406,7 @@ server <- function(input, output, session) {
           users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
           if (!is.null(users)) {
             tagList(
-              p(HTML(paste0("<b>Cache available for users / date ranges:</b> ", paste(users, collapse = ", ")))),
+              p(HTML(paste0("<b>Cache available for users/dates:</b> ", paste(users, collapse = ", ")))),
             )
           } else {
             tagList(p("No cached data available."))
@@ -429,7 +460,9 @@ server <- function(input, output, session) {
       br(),
       plotOutput("rating_evolution_plot", height = "400px"),
       br(),
-      plotOutput("rating_diff_plot", height = "400px")
+      plotOutput("rating_diff_plot", height = "300px"),
+      br(),
+      plotOutput("accuracy_plot", height = "300px")
     )
   })
 
@@ -438,6 +471,14 @@ server <- function(input, output, session) {
     req(nrow(rv$processed_games) > 0)
     tagList(
       DTOutput("recent_games_table", width = "100%")
+    )
+  })
+
+  output$chat_content <- renderUI({
+    req(rv$processed_games)
+    tagList(
+      h3("Interact with your data and dashboards"),
+      querychat_ui("chess_chat")
     )
   })
 
@@ -480,17 +521,17 @@ server <- function(input, output, session) {
       filter(!is.na(user_win)) %>%
       arrange(games.end_time) %>%
       mutate(game_index = row_number())
-    time_control <- freqs(plot_data$games.time_control)[1:5, ]
+    time_control <- freqs(plot_data$games.time_control)[1:3, ]
     plot_data <- filter(plot_data, .data$games.time_control %in% time_control$values) %>%
       mutate(games.time_control = factor(.data$games.time_control, levels = time_control$values))
     ggplot(plot_data, aes(x = game_index, y = user_rating)) +
       geom_point(alpha = 0.6, color = "darkblue") +
-      facet_grid(games.time_control ~ .) +
+      facet_grid(games.time_control ~ ., scales = "free") +
       labs(
-        title = "Rating Evolution in Chess.com",
+        title = "Rating Evolution in per Time Control",
         subtitle = sprintf(
           "Player: %s | Period: %s to %s",
-          input$chess_username,
+          isolate(input$chess_username),
           format(min(plot_data$games.end_time), "%Y-%m-%d"), # Use actual min/max of filtered data
           format(max(plot_data$games.end_time), "%Y-%m-%d")
         ),
@@ -504,18 +545,39 @@ server <- function(input, output, session) {
   })
 
   output$rating_diff_plot <- renderPlot({
-    ggplot(rv$querychat$df(), aes(x = rating_diff, fill = games.rated)) +
-      geom_histogram(bins = 60, color = "white", alpha = 0.8) +
+    rv$querychat$df() %>%
+      mutate(games.rated = factor(ifelse(games.rated, "Rated", "Not-Rated"), levels = c("Rated", "Not-Rated"))) %>%
+      ggplot(aes(x = rating_diff)) +
+      geom_histogram(aes(fill = user_win), bins = 50, color = "white", alpha = 0.8) +
       facet_grid(games.rated ~ ., scales = "free_y") +
       geom_vline(xintercept = 0, alpha = 0.6, linetype = "dotted", color = "darkgrey") +
       labs(
         title = "Difference in Ratings Between Players",
-        subtitle = sprintf("Player: %s | Negative means you played higher rated opponents", input$chess_username),
-        x = "Your Rating - Opponent's Rating",
-        y = "Number of Games",
-        fill = "Rated Game"
+        subtitle = sprintf("Player: %s | Negative means you played higher rated opponents", isolate(input$chess_username)),
+        x = "User Rating - Opponent's Rating",
+        y = "Number of games",
+        fill = "User won the game"
       ) +
-      scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#FFC107")) +
+      scale_y_abbr() +
+      theme_lares(legend = "top") +
+      theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+  })
+
+  output$accuracy_plot <- renderPlot({
+    rv$querychat$df() %>%
+      filter(!is.na(user_accuracy)) %>%
+      mutate(games.rated = factor(ifelse(games.rated, "Rated", "Not-Rated"), levels = c("Rated", "Not-Rated"))) %>%
+      ggplot(aes(x = user_accuracy)) +
+      geom_histogram(aes(fill = user_win), binwidth = 5, color = "white", alpha = 0.8) +
+      facet_grid(games.rated ~ ., scales = "free_y") +
+      labs(
+        title = "Win Rate per Accuracy Range",
+        subtitle = sprintf("Player: %s | Showing only accuracies reported", isolate(input$chess_username)),
+        x = "User Accuracy",
+        y = "Number of games",
+        fill = "User won the game"
+      ) +
+      scale_y_abbr() +
       theme_lares(legend = "top") +
       theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
   })
@@ -530,15 +592,17 @@ server <- function(input, output, session) {
         `End Time` = format(`End Time`, "%Y-%m-%d %H:%M"),
         `Url` = paste0("<a href='", `Url`, "' target='_blank'>Link</a>")
       ) %>%
-      select(-any_of(c("Pgn", "Tcn", "Initial Setup", "Fen", "White", "Black", "Uuid", "Game Number", "Start Time"))) %>%
+      select(-any_of(c(
+        "Pgn", "Tcn", "Initial Setup", "Fen", "White",
+        "Black", "Uuid", "Game Number", "Start Time", "Accuracies"
+      ))) %>%
       datatable(
         .,
         options = list(
           pageLength = 10,
           scrollX = TRUE,
           autoWidth = TRUE,
-          dom = "Bfrtip",
-          buttons = c("copy", "csv", "excel", "pdf", "print")
+          dom = "Bfrtip"
         ),
         escape = FALSE,
         rownames = FALSE,
