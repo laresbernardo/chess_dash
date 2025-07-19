@@ -16,6 +16,7 @@ library(lareshiny) # For login
 library(jsonlite) # For credentials
 library(chess) # For the chess board visualization
 library(magrittr) # For the pipe operator %>%
+library(stringr) # str_extract_all
 
 # Create credentials encrypted self-hosted file
 if (FALSE) {
@@ -136,6 +137,15 @@ clean_pgn <- function(pgn_string) {
   return(pgn_string)
 }
 
+flip_board <- function(s) {
+  s <- rev(s)
+  unlist(lapply(s, function(x){
+    s_split <- strsplit(x, "")[[1]]
+    s_reversed <- rev(s_split)
+    paste(s_reversed, collapse = "")
+  }))
+}
+
 # Define UI for the application
 ui <- fluidPage(
   theme = bs_theme(bootswatch = "flatly", font_scale = 0.9),
@@ -229,7 +239,8 @@ ui <- fluidPage(
             actionButton("reset_board", icon("angles-left"), class = "btn btn-primary"),
             actionButton("prev_move", icon("angle-left"), class = "btn btn-info"),
             actionButton("next_move", icon("angle-right"), class = "btn btn-info"),
-            actionButton("restart_to_end", icon("angles-right"), class = "btn btn-primary")
+            actionButton("restart_to_end", icon("angles-right"), class = "btn btn-primary"),
+            actionButton("flip", icon("arrows-up-down"), class = "btn btn-info")
           ),
           br(),
           htmlOutput("chess_board_output")
@@ -738,8 +749,8 @@ server <- function(input, output, session) {
       game_state$current_move_index <- game_state$current_move_index + 1
     }
   })
-
-  observeEvent(input$flip_board, {
+  
+  observeEvent(input$flip, {
     game_state$flipped <- !game_state$flipped
   })
 
@@ -750,12 +761,24 @@ server <- function(input, output, session) {
     if (game_state$current_move_index > 0) {
       current_game_node <- chess::forward(current_game_node, game_state$current_move_index)
     }
+    
+    # 1. Get the board lines without any color inversion from chess::print
+    # We still use unicode = TRUE for nice piece representation
     board_text_lines <- capture.output(print(
       current_game_node,
       unicode = TRUE,
-      invert_color = game_state$flipped
+      invert_color = FALSE # Always get the board with default (white at bottom) colors
     ))
+    
+    # Remove the first line (PGN header or similar)
     board_text_lines <- board_text_lines[-1]
+    
+    # 2. Conditionally apply your custom flip_board function based on game_state$flipped
+    if (game_state$flipped) {
+      board_text_lines <- flip_board(board_text_lines)
+    }
+    
+    # 3. Render the processed lines
     pre(paste(board_text_lines, collapse = "\n"), style = "font-size:40px; align:center;")
   })
 }
