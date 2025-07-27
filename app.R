@@ -19,6 +19,11 @@ library(chess) # For the chess board visualization
 library(magrittr) # For the pipe operator %>%
 library(stringr) # str_extract_all
 
+# Source the new plots.R file
+source("global.R")
+source("aux.R")
+source("plots.R")
+
 # Create credentials encrypted self-hosted file
 if (FALSE) {
   creds <- data.frame(user = "xxx", pass = "xxx")
@@ -33,119 +38,6 @@ plan(multisession)
 
 # Set cache directory
 cache_dir <- getwd()
-
-# Helper function to generate YYYY/MM ranges from a date range
-generate_month_ranges <- function(start_date, end_date) {
-  start_year <- as.numeric(format(start_date, "%Y"))
-  start_month <- as.numeric(format(start_date, "%m"))
-  end_year <- as.numeric(format(end_date, "%Y"))
-  end_month <- as.numeric(format(end_date, "%m"))
-
-  ranges <- c()
-  current_year <- start_year
-  current_month <- start_month
-
-  while (current_year < end_year || (current_year == end_year && current_month <= end_month)) {
-    ranges <- c(ranges, sprintf("%d/%02d", current_year, current_month))
-    current_month <- current_month + 1
-    if (current_month > 12) {
-      current_month <- 1
-      current_year <- current_year + 1
-    }
-  }
-  return(ranges)
-}
-
-global_data_description <- paste0(
-  "Your name is 'Chess Insights AI'. You are an AI assistant specialized in analyzing Chess.com game data. ",
-  "The data contains a player's chess game history with other real players. ",
-  "Here's a description of the columns provided:\n",
-  "- `games.uuid`: A unique identifier for each game provided by Chess.com.\n",
-  "- `game_number`: A unique, sequential identifier for each game, where 1 is the first available game.\n",
-  "- `games.end_time`: The date and time when the game ended.\n",
-  "- `games.eco`: The ECO (Encyclopedia of Chess Openings) code and name for the opening played in the game.\n",
-  "- `turns`: Number of turns per player, as in times each player moved pieces.\n",
-  "- `user_color`: The color (white or black) the player used in that specific game.\n",
-  "- `user_result`: The outcome of the game from the player's perspective (e.g., 'win', 'checkmated', 'resigned', 'draw').\n",
-  "- `user_rating`: The player's rating at the end of this game.\n",
-  "- `opponent_rating`: The opponent's rating at the end of this game.\n",
-  "- `rating_diff`: The difference between the player's rating and the opponent's rating (user_rating - opponent_rating). Positive means the player had a higher rating than the opponent.\n",
-  "- `user_accuracy`: The accuracy of the user's moves in the game.\n",
-  "- `opponent_accuracy`: The accuracy of the opponent user's moves in the game.\n",
-  "- `accuracy_diff`: user_accuracy - opponent_accuracy.\n",
-  "- `user_win`: A logical value indicating if the player won the game (TRUE for win, FALSE for loss, NA for draws or other non-win/loss results).\n",
-  "- `games.rated`: A logical value indicating if the game was rated (TRUE) or unrated (FALSE).\n",
-  "- `games.url`: The URL to the game on Chess.com.\n",
-  "- `games.pgn`: The game record in Portable Game Notation (PGN) format, including moves and game metadata.\n",
-  "- `games.time_control`: The time control in seconds for the game (e.g., 600 for 10-minute games).\n",
-  "- `games.tcn`: A unique identifier related to the game's time control and possibly other technical details (specific meaning from Chess.com API).\n",
-  "- `games.initial_setup`: The FEN (Forsyth-Edwards Notation) string representing the board setup at the start of the game. For standard games, this will be the initial chess position.\n",
-  "- `games.fen`: The FEN (Forsyth-Edwards Notation) string representing the board state at the end of the game or at the point where the game data was captured.\n",
-  "- `games.time_class`: The time control classification of the game (e.g., 'rapid', 'blitz', 'bullet').\n",
-  "- `games.rules`: The ruleset of the game (e.g., 'chess').\n",
-  "- `games.accuracies.white`: The accuracy percentage of the white player's moves, as calculated by Chess.com's game analysis.\n",
-  "- `games.accuracies.black`: The accuracy percentage of the black player's moves, as calculated by Chess.com's game analysis.\n",
-  "- `games.white.rating`: The white player's rating at the end of the game.\n",
-  "- `games.white.result`: The outcome of the game for the white player.\n",
-  "- `games.white.@id`: The API URL for the white player's profile on Chess.com.\n",
-  "- `games.white.username`: The username of the white player.\n",
-  "- `games.white.uuid`: A unique identifier for the white player.\n",
-  "- `games.black.rating`: The black player's rating at the end of the game.\n",
-  "- `games.black.result`: The outcome of the game for the black player.\n",
-  "- `games.black.@id`: The API URL for the black player's profile on Chess.com.\n",
-  "- `games.black.username`: The username of the black player.\n",
-  "- `games.black.uuid`: A unique identifier for the black player.\n",
-  "- `games.start_time`: The date and time when the game started.\n\n",
-  "When answering questions, focus on providing insights and summaries based on this data. ",
-  "You can calculate win rates, average ratings, analyze performance against different rating ranges, ",
-  "identify common openings, etc. If the user asks for data not present in this table, state that you cannot provide it. ",
-  "In the queries, always use double quotes when calling column names given some of them have dots. ",
-  "Avoid providing very long lists of raw data. Summarize when possible. ",
-  "When referring to numerical values, use appropriate rounding or abbreviations if they are very large. ",
-  "For counters, use integers without decimals. "
-)
-
-variable_names <- str_extract_all(global_data_description, "`.*?`")[[1]]
-variable_names <- gsub("`", "", variable_names)
-
-pgn2data <- function(games.pgn, format = "json") {
-  lapply(games.pgn, function(x) {
-    game <- data.frame(stringr::str_split(
-      gsub("%clk ", "", stringr::str_split(x, "\\]\n\n1. | \\d+... | \\d+. ")[[1]][-1]),
-      " ",
-      simplify = TRUE
-    )[, 1:2])
-    colnames(game) <- c("move", "timer")
-    game <- game[!grepl("Timezone", game$move), ]
-    game$timer <- gsub("\\{\\[|\\]\\}", "", game$timer)
-    game$turn <- rep(seq(1, 1 + nrow(game) / 2, by = 1), each = 2)[1:nrow(game)]
-    game$color <- rep(c("white", "black"), length = nrow(game))
-    if (format == "json") {
-      jsonlite::toJSON(game)
-    } else {
-      game
-    }
-  })
-}
-
-# --- PGN Cleaning Function ---
-clean_pgn <- function(pgn_string) {
-  pgn_string <- stringr::str_split(pgn_string, "\n\n", n = 2)[[1]][2]
-  pgn_string <- gsub("\\{\\[%clk [0-9:.]+\\]\\}", "", pgn_string, perl = TRUE)
-  pgn_string <- gsub("\\{\\[%[a-zA-Z]+ [^\\]]+\\]\\}", "", pgn_string, perl = TRUE)
-  pgn_string <- gsub("\\{[^\\}]*\\}", "", pgn_string, perl = TRUE)
-  pgn_string <- trimws(pgn_string) # Trim leading/trailing whitespace
-  return(pgn_string)
-}
-
-flip_board <- function(s) {
-  s <- rev(s)
-  unlist(lapply(s, function(x) {
-    s_split <- strsplit(x, "")[[1]]
-    s_reversed <- rev(s_split)
-    paste(s_reversed, collapse = "")
-  }))
-}
 
 # Define UI for the application
 ui <- fluidPage(
@@ -583,105 +475,19 @@ server <- function(input, output, session) {
   })
 
   output$rating_evolution_plot <- renderPlot({
-    plot_data <- rv$querychat$df() %>%
-      filter(!is.na(user_win)) %>%
-      arrange(games.end_time) %>%
-      mutate(game_index = row_number())
-    filters <- head(freqs(plot_data, games.time_class, games.time_control), 3) %>%
-      mutate(mix = paste(games.time_class, games.time_control))
-    plot_data <- plot_data %>%
-      mutate(
-        mix = paste(games.time_class, games.time_control),
-        mix = factor(mix, levels = filters$mix)
-      )
-    ggplot(plot_data, aes(x = game_index, y = user_rating)) +
-      geom_point(alpha = 0.6, color = "darkblue") +
-      facet_grid(mix ~ ., scales = "free") +
-      labs(
-        title = "Rating Evolution in per Time Control",
-        subtitle = sprintf(
-          "Player: %s | Period: %s to %s | Most frequent class + time control",
-          isolate(input$chess_username),
-          format(min(plot_data$games.end_time), "%Y-%m-%d"), # Use actual min/max of filtered data
-          format(max(plot_data$games.end_time), "%Y-%m-%d")
-        ),
-        y = "Rating",
-        x = "Game Number (Chronological)"
-      ) +
-      geom_smooth(method = "loess", se = TRUE, color = "red", linetype = "dashed") +
-      scale_y_continuous(labels = scales::label_number(scale_cut = scales::cut_short_scale())) +
-      theme_lares(legend = "top") +
-      theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+    plot_rating_evolution(rv$querychat$df(), isolate(input$chess_username))
   })
-
+  
   output$rating_diff_plot <- renderPlot({
-    rv$querychat$df() %>%
-      mutate(games.rated = factor(ifelse(games.rated, "Rated", "Not-Rated"), levels = c("Rated", "Not-Rated"))) %>%
-      ggplot(aes(x = rating_diff)) +
-      geom_histogram(aes(fill = user_win), bins = 50, color = "white", alpha = 0.8) +
-      facet_grid(games.rated ~ ., scales = "free_y") +
-      geom_vline(xintercept = 0, alpha = 0.6, linetype = "dotted", color = "darkgrey") +
-      labs(
-        title = "Difference in Ratings Between Players",
-        subtitle = sprintf("Player: %s | Negative means you played higher rated opponents", isolate(input$chess_username)),
-        x = "User Rating - Opponent's Rating",
-        y = "Number of games",
-        fill = "User won the game"
-      ) +
-      scale_y_abbr() +
-      theme_lares(legend = "top") +
-      theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+    plot_rating_diff(rv$querychat$df(), isolate(input$chess_username))
   })
 
   output$freq_moves_plot <- renderPlot({
-    plot_frequent_moves <- function(df, n_turns = 3, top_moves = 8) {
-      df$df.pgn <- lapply(df$games.pgn, function(x) pgn2data(x, "df")[[1]])
-      firstn <- lapply(df$df.pgn, function(x) x[x$turn <= n_turns, ])
-      firstn <- lapply(seq_along(firstn), function(i) filter(firstn[[i]], color == df$user_color[i]))
-      first_df <- bind_rows(firstn)
-      combs <- freqs(first_df, color, turn) %>% arrange(desc(color), turn)
-      plots <- lapply(1:nrow(combs), function(i) {
-        first_df[first_df$turn == combs$turn[i] & first_df$color == combs$color[i], ] %>%
-          mutate(turn = paste0("#", turn)) %>%
-          freqs(turn, color, move) %>%
-          head(top_moves) %>%
-          ggplot() +
-          geom_col(aes(y = reorder(move, n), x = n, fill = color)) +
-          facet_grid(. ~ turn, scales = "free") +
-          scale_fill_manual(values = c("black" = "black", "white" = "grey90")) +
-          labs(x = NULL, y = NULL, fill = NULL) +
-          lares::scale_x_abbr() +
-          lares::theme_lares(legend = "none")
-      })
-      patchwork::wrap_plots(plots, ncol = n_turns) &
-        patchwork::plot_annotation(
-          theme = lares::theme_lares(),
-          title = sprintf(
-            "%s most frequent moves on first %s turns by color",
-            top_moves, n_turns
-          )
-        )
-    }
     plot_frequent_moves(rv$querychat$df(), n_turns = 3, top_moves = 8)
   })
 
   output$accuracy_plot <- renderPlot({
-    rv$querychat$df() %>%
-      filter(!is.na(user_accuracy)) %>%
-      mutate(games.rated = factor(ifelse(games.rated, "Rated", "Not-Rated"), levels = c("Rated", "Not-Rated"))) %>%
-      ggplot(aes(x = user_accuracy)) +
-      geom_histogram(aes(fill = user_win), binwidth = 5, color = "white", alpha = 0.8) +
-      facet_grid(games.rated ~ ., scales = "free_y") +
-      labs(
-        title = "Win Rate per Accuracy Range",
-        subtitle = sprintf("Player: %s | Showing only accuracies reported", isolate(input$chess_username)),
-        x = "User Accuracy",
-        y = "Number of games",
-        fill = "User won the game"
-      ) +
-      scale_y_abbr() +
-      theme_lares(legend = "top") +
-      theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+    plot_accuracy(rv$querychat$df(), isolate(input$chess_username))
   })
 
   output$recent_games_table <- renderDT({
