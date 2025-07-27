@@ -18,6 +18,7 @@ library(jsonlite) # For credentials
 library(chess) # For the chess board visualization
 library(magrittr) # For the pipe operator %>%
 library(stringr) # str_extract_all
+library(htmltools) # For htmlEscape
 
 # Source the new plots.R file
 source("global.R")
@@ -207,7 +208,7 @@ server <- function(input, output, session) {
   # Update the available cache keys and the text area
   update_cache_display <- function() {
     rv$available_cache_keys <- get_current_cache_keys()
-    updateTextAreaInput(session, "cache_keys_input", value = paste(rv$available_cache_keys, collapse = "\n"))
+    updateTextAreaInput(session, "cache_keys_input", value = paste(sort(rv$available_cache_keys), collapse = "\n"))
   }
 
   # Initial call to populate the cache list on app start
@@ -430,8 +431,8 @@ server <- function(input, output, session) {
           api_key = Sys.getenv("OPENAI_API")
         )
         # create_chat_func = purrr::partial(
-        #    ellmer::chat_ollama,
-        #    model = "llama3.2"
+        #   ellmer::chat_ollama,
+        #   model = "llama3.2"
         # )
       )
       rv$querychat <- querychat_server("chess_chat", querychat_config_global)
@@ -572,7 +573,11 @@ server <- function(input, output, session) {
         load_pgn = paste0(
           '<button id="load_button_', row_number(),
           '" type="button" class="btn btn-primary btn-sm load-game-button" data-row-pgn="',
-          htmltools::htmlEscape(clean_pgn(`games.pgn`)), '">Load</button>'
+          htmltools::htmlEscape(clean_pgn(`games.pgn`)),
+          # Pass the user_color
+          '" data-row-user-color="',
+          user_color,
+          '">Load</button>'
         ),
         games.end_time = format(games.end_time, "%Y-%m-%d %H:%M"),
         game_number = paste0("<a href='", games.url, "' target='_blank'>", game_number, "</a>")
@@ -599,15 +604,15 @@ server <- function(input, output, session) {
           // It attaches click event listeners to the 'Load' buttons.
           table.on('click', '.load-game-button', function() {
             var pgn = $(this).data('row-pgn'); // Get the PGN from the data attribute
-            // Send the PGN to the server.
-            // The input$load_pgn_data event will be triggered with the PGN value.
-            Shiny.setInputValue('load_pgn_data', pgn, {priority: 'event'});
+            var userColor = $(this).data('row-user-color'); // <<< ADDED: Get user_color from data attribute
+            // Send the PGN and user_color as an object to the server.
+            Shiny.setInputValue('load_game_data', { pgn: pgn, userColor: userColor }, {priority: 'event'});
           });
         ")
     )
   })
 
-  # --- Chess Game Viewer Logic (from second app) ---
+  # --- Chess Game Viewer Logic ---
 
   # Helper function to get the total number of full moves in the game
   get_total_moves <- function(game_node) {
@@ -630,44 +635,98 @@ server <- function(input, output, session) {
   })
 
   # Observer for the 'Load' button click from the DT table
-  observeEvent(input$load_pgn_data, {
-    # Clean the PGN before updating the textarea and parsing
-    cleaned_pgn <- input$load_pgn_data
-    updateTextAreaInput(session, "pgn_input", value = cleaned_pgn)
-  })
-
-  # Observer for changes in the PGN input text area (manual or from 'Load' button)
-  observeEvent(input$pgn_input,
+  # This event now receives both PGN and user_color
+  observeEvent(input$load_game_data,
     {
-      req(input$pgn_input)
+      req(input$load_game_data)
 
-      # Use the cleaned PGN directly from the input for parsing
+      loaded_pgn <- input$load_game_data$pgn
+      loaded_user_color <- input$load_game_data$userColor
+
+      # Update the textarea with the PGN (optional, but good for user feedback)
+      updateTextAreaInput(session, "pgn_input", value = loaded_pgn)
+
+      # Parse the PGN and update game_state
       tryCatch(
         {
-          game <- read_game(file = textConnection(input$pgn_input))
+          game <- read_game(file = textConnection(loaded_pgn))
           game_state$game <- game
           game_state$current_move_index <- total_game_moves() # Go to end of game by default
-          game_state$flipped <- FALSE
-          showNotification("PGN loaded successfully!", type = "message", duration = 5)
+
+          # Set flipped based on loaded_user_color
+          game_state$flipped <- (loaded_user_color == "black")
+
+          showNotification(paste("PGN loaded successfully as", loaded_user_color), type = "message", duration = 5)
         },
         error = function(e) {
           showNotification(paste("Error parsing PGN:", e$message), type = "error", duration = NULL)
           game_state$game <- NULL
+          game_state$flipped <- FALSE # Reset flip state on error
         }
       )
+    },
+    priority = 1
+  ) # Give this higher priority to process first when loading from table
+
+  # Observer for changes in the PGN input text area (manual or from 'Load' button)
+  # This will primarily handle manual PGN entries now.
+  observeEvent(input$pgn_input,
+    {
+      req(input$pgn_input)
+
+      # Only process if this is a direct user input, not triggered by a load_game_data event.
+      # A simple way to check is if game_state$game is NULL or if input$pgn_input has genuinely changed
+      # from what was last loaded by the button (which is harder to track perfectly).
+      # For manual entries, we default to White's view.
+
+      # If the PGN input is empty or just changed (and not from load_game_data), reset.
+      # This effectively ensures manual changes reset the flip state.
+      if (!isTRUE(game_state$last_loaded_pgn == input$pgn_input)) { # Prevent re-trigger on programmatic update
+        tryCatch(
+          {
+            game <- read_game(file = textConnection(input$pgn_input))
+            game_state$game <- game
+            game_state$current_move_index <- total_game_moves()
+            game_state$flipped <- FALSE # Default to not flipped for manual entries
+            game_state$last_loaded_pgn <- input$pgn_input # Store for comparison
+            showNotification("Manual PGN loaded successfully! (Default view: White)", type = "message", duration = 5)
+          },
+          error = function(e) {
+            showNotification(paste("Error parsing PGN manually:", e$message), type = "error", duration = NULL)
+            game_state$game <- NULL
+            game_state$flipped <- FALSE
+            game_state$last_loaded_pgn <- "" # Clear on error
+          }
+        )
+      }
+    },
+    ignoreNULL = FALSE,
+    priority = -1 # Lower priority so input$load_game_data processes first
+  )
+
+  # A simple reactive value to store the last PGN loaded by the button
+  # This helps prevent the input$pgn_input observer from re-processing
+  # when it's programmatically updated by input$load_game_data.
+  observeEvent(input$load_game_data,
+    {
+      game_state$last_loaded_pgn <- input$load_game_data$pgn
     },
     ignoreNULL = FALSE
   )
 
+
   observeEvent(input$reset_board, {
     game_state$current_move_index <- 0
-    game_state$flipped <- FALSE
+    # When resetting, maintain the current flip state, or reset to default based on preference.
+    # For simplicity, let's keep the user's initial preference if they loaded a game as Black.
+    # If you want it to always reset to White's view, set game_state$flipped <- FALSE here.
   })
 
   observeEvent(input$restart_to_end, {
     req(game_state$game)
     game_state$current_move_index <- total_game_moves()
-    game_state$flipped <- FALSE
+    # Same as reset_board, maintain current flip state or reset to default.
+    # For consistency with initial load, we're not touching flipped here.
   })
 
   observeEvent(input$prev_move, {
@@ -696,23 +755,22 @@ server <- function(input, output, session) {
       current_game_node <- chess::forward(current_game_node, game_state$current_move_index)
     }
 
-    # 1. Get the board lines without any color inversion from chess::print
-    # We still use unicode = TRUE for nice piece representation
+    # Generate the board text, applying the flip directly in the chess::print call
+    # The 'flipped' argument in chess::print directly controls the orientation.
     board_text_lines <- capture.output(print(
       current_game_node,
-      unicode = TRUE,
-      invert_color = FALSE # Always get the board with default (white at bottom) colors
+      unicode = TRUE
     ))
 
-    # Remove the first line (PGN header or similar)
+    # Remove the first line (PGN header or similar, often blank)
     board_text_lines <- board_text_lines[-1]
 
-    # 2. Conditionally apply your custom flip_board function based on game_state$flipped
+    # Conditionally apply your custom flip_board function based on game_state$flipped
     if (game_state$flipped) {
       board_text_lines <- flip_board(board_text_lines)
     }
 
-    # 3. Render the processed lines
+    # Render the processed lines using <pre> for monospaced font and preserved whitespace
     pre(paste(board_text_lines, collapse = "\n"), style = "font-size:40px; align:center;")
   })
 }
