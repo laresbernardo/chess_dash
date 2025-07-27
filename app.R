@@ -183,6 +183,7 @@ server <- function(input, output, session) {
   # --- Reactive Values for Main App Data ---
   rv <- reactiveValues(
     processed_games = NULL,
+    final_user = NULL,
     loading = FALSE,
     error = NULL,
     available_cache_keys = NULL # Renamed for clarity to hold just the keys
@@ -241,7 +242,7 @@ server <- function(input, output, session) {
         rows = 5,
         width = "100%"
       ),
-      helpText(HTML("To remove caches, delete its line(s) above and submit below:"))
+      helpText("To remove caches, delete line(s) above and click button below:")
     )
   })
 
@@ -305,6 +306,7 @@ server <- function(input, output, session) {
     )
 
     current_username_or_cache_key <- input$chess_username
+    rv$final_user <- gsub("_.*", "", isolate(input$chess_username))
     fetch_option <- input$data_fetch_option
     selected_start_date <- if (fetch_option == "range") input$date_range[1] else as.Date("1970-01-01")
     # Only consider starting month completely given the API returns whole months
@@ -325,14 +327,11 @@ server <- function(input, output, session) {
           "Data for '%s' loaded from cache.", current_username_or_cache_key
         ), type = "message", duration = 5)
       } else {
-        # This case should ideally not happen if rv$available_cache_keys is accurate
-        # but provides a safeguard.
+        # This case should ideally not happen if rv$available_cache_keys is accurate but provides a safeguard.
         message(sprintf("Cache file for '%s' not found despite being in list. Proceeding with regular fetch.", current_username_or_cache_key))
       }
     }
-    # --- END NEW LOGIC ---
 
-    # --- Existing Fetch Logic (now only runs if exact cache was not loaded) ---
     if (!loaded_from_exact_cache) {
       # Determine the cache key based on selected options (username + date/all)
       cache_key <- if (fetch_option == "all") {
@@ -384,7 +383,7 @@ server <- function(input, output, session) {
           message(sprintf("Data for %s cached successfully: %s", current_username_or_cache_key, cache_key))
           showNotification(sprintf(
             "New data for '%s' fetched and cached.", cache_key
-          ), type = "info", duration = 5)
+          ), type = "message", duration = 5)
         }
       }
     }
@@ -400,7 +399,7 @@ server <- function(input, output, session) {
           games.end_time = as.POSIXct(games.end_time, origin = "1970-01-01", tz = "UTC"),
           games.eco = gsub("-|\\.|\\.\\.\\.", " ", gsub(".*openings/", "", games.eco)),
           turns = 0,
-          user_color = ifelse(games.white$username == current_username_or_cache_key, "white", "black"), # Use input value for username
+          user_color = ifelse(games.white$username == rv$final_user, "white", "black"), # Use input value for username
           user_result = ifelse(user_color == "white", games.white$result, games.black$result),
           user_rating = ifelse(user_color == "white", games.white$rating, games.black$rating),
           opponent_rating = ifelse(user_color == "white", games.black$rating, games.white$rating),
@@ -551,11 +550,11 @@ server <- function(input, output, session) {
   })
 
   output$rating_evolution_plot <- renderPlot({
-    plot_rating_evolution(rv$querychat$df(), isolate(input$chess_username))
+    plot_rating_evolution(rv$querychat$df(), isolate(rv$final_user))
   })
 
   output$rating_diff_plot <- renderPlot({
-    plot_rating_diff(rv$querychat$df(), isolate(input$chess_username))
+    plot_rating_diff(rv$querychat$df(), isolate(rv$final_user))
   })
 
   output$freq_moves_plot <- renderPlot({
@@ -563,7 +562,7 @@ server <- function(input, output, session) {
   })
 
   output$accuracy_plot <- renderPlot({
-    plot_accuracy(rv$querychat$df(), isolate(input$chess_username))
+    plot_accuracy(rv$querychat$df(), isolate(rv$final_user))
   })
 
   output$recent_games_table <- renderDT({
