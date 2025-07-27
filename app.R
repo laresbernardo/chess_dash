@@ -67,32 +67,44 @@ ui <- fluidPage(
       h4("Player Information"),
       textInput(
         inputId = "chess_username",
-        label = "Chess.com Username:",
+        label = "Chess.com Username / Cache Key:", # Label updated
         value = "laresdj", # Default username
-        placeholder = "e.g., laresdj"
+        placeholder = "e.g., laresdj or laresdj_all" # Placeholder updated
       ),
       radioButtons(
         inputId = "data_fetch_option",
         label = "Data Fetch Option:",
-        choices = c("Fetch All Games" = "all", "Select Date Range" = "range"),
+        choices = c("Fetch All Games/Load cache" = "all", "Fetch a Date Range" = "range"),
         selected = "all" # Default to fetching all games
       ),
       # Date range input, conditionally shown
       uiOutput("date_range_ui"),
       actionButton(
         inputId = "fetch_data",
-        label = "Fetch Data",
+        label = "Fetch Data / Load Cache",
         icon = icon("download"),
-        class = "btn-primary"
+        class = "btn-primary",
+        width = "100%"
       ),
       hr(),
-      # Cache information and reset button
-      uiOutput("cache_info"), # Placeholder for cache info
+      # Cache information and interactive removal
+      h4("Cache Management"), # New header for clarity
+      uiOutput("cache_list_ui"), # New UI for the editable text area
+      br(),
       actionButton(
-        inputId = "reset_cache",
-        label = "Reset Cache",
+        inputId = "apply_cache_changes",
+        label = "Apply Cache Changes",
+        icon = icon("save"),
+        class = "btn-primary",
+        width = "100%"
+      ),
+      p(" "),
+      actionButton(
+        inputId = "reset_all_caches", # Renamed from reset_cache for clarity
+        label = "Clear All Cache",
         icon = icon("broom"),
-        class = "btn-danger"
+        class = "btn-danger",
+        width = "100%"
       ),
       hr(),
       helpText(
@@ -172,7 +184,8 @@ server <- function(input, output, session) {
   rv <- reactiveValues(
     processed_games = NULL,
     loading = FALSE,
-    error = NULL
+    error = NULL,
+    available_cache_keys = NULL # Renamed for clarity to hold just the keys
   )
 
   # --- Reactive Values for Chess Game Viewer ---
@@ -180,6 +193,28 @@ server <- function(input, output, session) {
     game = NULL, # Stores the chess game object (root GameNode) parsed from PGN
     current_move_index = 0, # Tracks the current move being displayed (0 for initial board)
     flipped = FALSE # Boolean to toggle board orientation (FALSE for white's view, TRUE for black's)
+  )
+
+  # Function to get current cache keys
+  get_current_cache_keys <- function() {
+    cache_files <- list.files(cache_dir, pattern = "^lares_cache_.*\\.RDS$", full.names = FALSE)
+    # Extract the part between "lares_cache_" and ".RDS"
+    cache_keys <- gsub("^lares_cache_|\\.RDS$", "", cache_files)
+    return(sort(unique(cache_keys)))
+  }
+
+  # Update the available cache keys and the text area
+  update_cache_display <- function() {
+    rv$available_cache_keys <- get_current_cache_keys()
+    updateTextAreaInput(session, "cache_keys_input", value = paste(rv$available_cache_keys, collapse = "\n"))
+  }
+
+  # Initial call to populate the cache list on app start
+  observeEvent(TRUE,
+    { # Use TRUE to trigger on app start
+      update_cache_display()
+    },
+    once = TRUE
   )
 
   # --- Data Fetching and Processing (from original app) ---
@@ -196,37 +231,63 @@ server <- function(input, output, session) {
     }
   })
 
-  cached_users <- reactive({
-    cache_files <- list.files(cache_dir, pattern = "\\.rds$", full.names = FALSE)
-    unique_usernames <- unique(gsub("_(all|\\d{8}_\\d{8})\\.rds$", "", cache_files))
-    if (length(unique_usernames) > 0) {
-      return(sort(unique_usernames))
-    } else {
-      return(NULL)
-    }
+  # Render the interactive cache list UI
+  output$cache_list_ui <- renderUI({
+    tagList(
+      textAreaInput(
+        inputId = "cache_keys_input",
+        label = "Available Caches (one per line):",
+        value = paste(rv$available_cache_keys, collapse = "\n"),
+        rows = 5,
+        width = "100%"
+      ),
+      helpText(HTML("To remove caches, delete its line(s) above and submit below:"))
+    )
   })
 
-  output$cache_info <- renderUI({
-    caches <- lares::cache_exists(cache_dir = cache_dir)
-    if (isTRUE(caches)) {
-      users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
-      tagList(
-        p(HTML(paste0("<b>Cache available for users/dates:</b> ", paste(users, collapse = ", "))))
+  # Observer for applying cache changes from the text area
+  observeEvent(input$apply_cache_changes, {
+    # Get the caches currently on disk
+    caches_on_disk <- get_current_cache_keys()
+
+    # Get the caches from the text input, split by new line and trim whitespace
+    desired_caches <- str_trim(str_split(input$cache_keys_input, "\n")[[1]])
+    # Remove any empty strings that might result from extra new lines
+    desired_caches <- desired_caches[desired_caches != ""]
+
+    # Caches to remove (present on disk but not in the input)
+    caches_to_remove <- setdiff(caches_on_disk, desired_caches)
+
+    if (length(caches_to_remove) > 0) {
+      showNotification(
+        paste("Removing", length(caches_to_remove), "cache(s)..."),
+        type = "warning", duration = 3
       )
+      for (cache_key in caches_to_remove) {
+        file_path <- file.path(cache_dir, paste0("lares_cache_", cache_key, ".RDS"))
+        if (file.exists(file_path)) {
+          file.remove(file_path)
+          message(paste("Removed cache file:", file_path))
+        }
+      }
+      showNotification("Selected caches removed!", type = "message", duration = 3)
     } else {
-      tagList(p("No cached data available."))
+      showNotification("No caches to remove or changes applied.", type = "info", duration = 3)
     }
+
+    # Refresh the display of available caches
+    update_cache_display()
   })
 
-  observeEvent(input$reset_cache, {
-    showNotification("Clearing cache...", type = "warning", duration = 3)
+
+  observeEvent(input$reset_all_caches, { # Changed from input$reset_cache
+    showNotification("Clearing all caches...", type = "warning", duration = 3)
     lares::cache_clear(cache_dir = cache_dir)
     rv$processed_games <- NULL
     rv$error <- NULL
-    showNotification("Cache cleared!", type = "default", duration = 3)
-    output$cache_info <- renderUI({
-      tagList(p("No cached data available."))
-    })
+    showNotification("All caches cleared!", type = "default", duration = 3)
+    # Update the cache display after clearing all
+    update_cache_display()
   })
 
   observeEvent(input$fetch_data, {
@@ -243,61 +304,91 @@ server <- function(input, output, session) {
       closeButton = FALSE
     )
 
-    current_username <- input$chess_username
+    current_username_or_cache_key <- input$chess_username
     fetch_option <- input$data_fetch_option
     selected_start_date <- if (fetch_option == "range") input$date_range[1] else as.Date("1970-01-01")
     # Only consider starting month completely given the API returns whole months
     selected_start_date <- format(selected_start_date, "%Y%m")
     selected_end_date <- if (fetch_option == "range") input$date_range[2] else Sys.Date()
 
-    cache_key <- if (fetch_option == "all") {
-      paste0(current_username, "_all")
-    } else {
-      paste0(current_username, "_", selected_start_date, "_", format(selected_end_date, "%Y%m%d"))
-    }
-
-    # Fetch data
+    # --- Try to load exact cache key from input$chess_username ---
     fetched_data <- NULL
-    if (cache_exists(base = cache_key, cache_dir = cache_dir)) {
-      fetched_data <- cache_read(base = cache_key, cache_dir = cache_dir)
-      message(sprintf("Data for %s read from cache: %s", current_username, cache_key))
-    } else {
-      message(sprintf("Fetching data for %s (option: %s)...", current_username, fetch_option))
-      if (fetch_option == "all") {
-        fetched_data <- tryCatch(
-          {
-            chessPI.pull(current_username, range = "all")
-          },
-          error = function(e) {
-            message(sprintf("Error fetching 'all' data for %s: %s", current_username, e$message))
-            return(NULL)
-          }
-        )
+    loaded_from_exact_cache <- FALSE
+
+    if (current_username_or_cache_key %in% rv$available_cache_keys) {
+      exact_cache_file_path <- file.path(cache_dir, paste0("lares_cache_", current_username_or_cache_key, ".RDS"))
+      if (file.exists(exact_cache_file_path)) {
+        fetched_data <- lares::cache_read(base = current_username_or_cache_key, cache_dir = cache_dir)
+        message(sprintf("Data for %s loaded from exact cache key: %s", current_username_or_cache_key, current_username_or_cache_key))
+        loaded_from_exact_cache <- TRUE
+        showNotification(sprintf(
+          "Data for '%s' loaded from cache.", current_username_or_cache_key
+        ), type = "message", duration = 5)
       } else {
-        month_ranges_to_fetch <- generate_month_ranges(input$date_range[1], input$date_range[2])
-        all_monthly_games <- list()
-        for (month_range in month_ranges_to_fetch) {
-          monthly_games <- tryCatch(
+        # This case should ideally not happen if rv$available_cache_keys is accurate
+        # but provides a safeguard.
+        message(sprintf("Cache file for '%s' not found despite being in list. Proceeding with regular fetch.", current_username_or_cache_key))
+      }
+    }
+    # --- END NEW LOGIC ---
+
+    # --- Existing Fetch Logic (now only runs if exact cache was not loaded) ---
+    if (!loaded_from_exact_cache) {
+      # Determine the cache key based on selected options (username + date/all)
+      cache_key <- if (fetch_option == "all") {
+        paste0(current_username_or_cache_key, "_all")
+      } else {
+        paste0(current_username_or_cache_key, "_", selected_start_date, "_", format(selected_end_date, "%Y%m%d"))
+      }
+
+      if (lares::cache_exists(base = cache_key, cache_dir = cache_dir)) {
+        fetched_data <- lares::cache_read(base = cache_key, cache_dir = cache_dir)
+        message(sprintf("Data for %s read from generated cache: %s", current_username_or_cache_key, cache_key))
+        showNotification(sprintf(
+          "Data for '%s' loaded from cache.", cache_key
+        ), type = "message", duration = 5)
+      } else {
+        message(sprintf("Fetching data for %s (option: %s)...", current_username_or_cache_key, fetch_option))
+        if (fetch_option == "all") {
+          fetched_data <- tryCatch(
             {
-              chessPI.pull(current_username, range = month_range)
+              ChessPI::chessPI.pull(current_username_or_cache_key, range = "all")
             },
             error = function(e) {
-              message(sprintf("Error fetching data for %s/%s: %s", current_username, month_range, e$message))
+              message(sprintf("Error fetching 'all' data for %s: %s", current_username_or_cache_key, e$message))
               return(NULL)
             }
           )
-          if (!is.null(monthly_games)) {
-            all_monthly_games[[month_range]] <- monthly_games
+        } else {
+          month_ranges_to_fetch <- generate_month_ranges(input$date_range[1], input$date_range[2])
+          all_monthly_games <- list()
+          for (month_range in month_ranges_to_fetch) {
+            monthly_games <- tryCatch(
+              {
+                ChessPI::chessPI.pull(current_username_or_cache_key, range = month_range)
+              },
+              error = function(e) {
+                message(sprintf("Error fetching data for %s/%s: %s", current_username_or_cache_key, month_range, e$message))
+                return(NULL)
+              }
+            )
+            if (!is.null(monthly_games)) {
+              all_monthly_games[[month_range]] <- monthly_games
+            }
           }
+          fetched_data <- bind_rows(all_monthly_games)
         }
-        fetched_data <- bind_rows(all_monthly_games)
-      }
 
-      if (!is.null(fetched_data) && nrow(fetched_data) > 0) {
-        cache_write(fetched_data, base = cache_key, cache_dir = cache_dir)
-        message(sprintf("Data for %s cached successfully: %s", current_username, cache_key))
+        if (!is.null(fetched_data) && nrow(fetched_data) > 0) {
+          lares::cache_write(fetched_data, base = cache_key, cache_dir = cache_dir)
+          message(sprintf("Data for %s cached successfully: %s", current_username_or_cache_key, cache_key))
+          showNotification(sprintf(
+            "New data for '%s' fetched and cached.", cache_key
+          ), type = "info", duration = 5)
+        }
       }
     }
+    # --- END Existing Fetch Logic ---
 
     processed_data <- NULL
     if (!is.null(fetched_data) && nrow(fetched_data) > 0) {
@@ -309,7 +400,7 @@ server <- function(input, output, session) {
           games.end_time = as.POSIXct(games.end_time, origin = "1970-01-01", tz = "UTC"),
           games.eco = gsub("-|\\.|\\.\\.\\.", " ", gsub(".*openings/", "", games.eco)),
           turns = 0,
-          user_color = ifelse(games.white$username == current_username, "white", "black"),
+          user_color = ifelse(games.white$username == current_username_or_cache_key, "white", "black"), # Use input value for username
           user_result = ifelse(user_color == "white", games.white$result, games.black$result),
           user_rating = ifelse(user_color == "white", games.white$rating, games.black$rating),
           opponent_rating = ifelse(user_color == "white", games.black$rating, games.white$rating),
@@ -340,8 +431,8 @@ server <- function(input, output, session) {
           api_key = Sys.getenv("OPENAI_API")
         )
         # create_chat_func = purrr::partial(
-        #   ellmer::chat_ollama,
-        #   model = "llama3.2"
+        #    ellmer::chat_ollama,
+        #    model = "llama3.2"
         # )
       )
       rv$querychat <- querychat_server("chess_chat", querychat_config_global)
@@ -358,23 +449,8 @@ server <- function(input, output, session) {
       }
     }
 
-    caches <- lares::cache_exists(cache_dir = cache_dir)
-    output$cache_info <- renderUI({
-      users <- gsub("lares_cache_|\\.RDS", "", attr(caches, "base"))
-      if (!is.null(users)) {
-        tagList(
-          p(HTML(paste0("<b>Cache available for users/dates:</b> ", paste(users, collapse = ", ")))),
-        )
-      } else {
-        tagList(p("No cached data available."))
-      }
-    })
-
-    if (cache_exists(base = cache_key, cache_dir = cache_dir)) {
-      showNotification(sprintf(
-        "Data for %s read from cache", cache_key
-      ), type = "default", duration = 3)
-    }
+    # Update cache display after fetching data (new cache might be created)
+    update_cache_display()
   })
 
   output$error_message <- renderUI({
@@ -477,7 +553,7 @@ server <- function(input, output, session) {
   output$rating_evolution_plot <- renderPlot({
     plot_rating_evolution(rv$querychat$df(), isolate(input$chess_username))
   })
-  
+
   output$rating_diff_plot <- renderPlot({
     plot_rating_diff(rv$querychat$df(), isolate(input$chess_username))
   })
