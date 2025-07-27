@@ -4,6 +4,7 @@ library(bslib) # For modern, nice-looking dashboard theme
 library(lares) # For theme_lares() and freqs()
 library(dplyr) # For data manipulation
 library(ggplot2) # For plotting
+library(patchwork) # To join mutltiple plots
 library(ChessPI) # To fetch Chess.com data
 library(DT) # For interactive data tables
 library(future) # For asynchronous operations
@@ -110,11 +111,12 @@ variable_names <- gsub("`", "", variable_names)
 pgn2data <- function(games.pgn, format = "json") {
   lapply(games.pgn, function(x) {
     game <- data.frame(stringr::str_split(
-      gsub("%clk ", "", stringr::str_split(x, "\n\n1. | \\d+... | \\d+. ")[[1]][-1]),
+      gsub("%clk ", "", stringr::str_split(x, "\\]\n\n1. | \\d+... | \\d+. ")[[1]][-1]),
       " ",
       simplify = TRUE
-    )[, -3])
+    )[, 1:2])
     colnames(game) <- c("move", "timer")
+    game <- game[!grepl("Timezone", game$move), ]
     game$timer <- gsub("\\{\\[|\\]\\}", "", game$timer)
     game$turn <- rep(seq(1, 1 + nrow(game) / 2, by = 1), each = 2)[1:nrow(game)]
     game$color <- rep(c("white", "black"), length = nrow(game))
@@ -127,7 +129,6 @@ pgn2data <- function(games.pgn, format = "json") {
 }
 
 # --- PGN Cleaning Function ---
-# This function will remove common annotations from Chess.com PGNs
 clean_pgn <- function(pgn_string) {
   pgn_string <- stringr::str_split(pgn_string, "\n\n", n = 2)[[1]][2]
   pgn_string <- gsub("\\{\\[%clk [0-9:.]+\\]\\}", "", pgn_string, perl = TRUE)
@@ -139,7 +140,7 @@ clean_pgn <- function(pgn_string) {
 
 flip_board <- function(s) {
   s <- rev(s)
-  unlist(lapply(s, function(x){
+  unlist(lapply(s, function(x) {
     s_split <- strsplit(x, "")[[1]]
     s_reversed <- rev(s_split)
     paste(s_reversed, collapse = "")
@@ -267,7 +268,7 @@ server <- function(input, output, session) {
     style = list(botton_txt_colour = "#FFF", botton_bgd_colour = "#000"),
     logo = "icon.png",
     lang = "en",
-    personal = "61.0.16.172.net-uno.net"
+    logged = TRUE
   )
   observe({
     if (login$authenticated) {
@@ -412,9 +413,10 @@ server <- function(input, output, session) {
         arrange(games.end_time) %>%
         mutate(
           game_number = row_number(),
+          df.pgn = lapply(games.pgn, function(x) pgn2data(x, "df")[[1]]),
           games.end_time = as.POSIXct(games.end_time, origin = "1970-01-01", tz = "UTC"),
           games.eco = gsub("-|\\.|\\.\\.\\.", " ", gsub(".*openings/", "", games.eco)),
-          turns = unlist(lapply(pgn2data(games.pgn, "df"), function(x) nrow(x) / 2)),
+          turns = 0,
           user_color = ifelse(games.white$username == current_username, "white", "black"),
           user_result = ifelse(user_color == "white", games.white$result, games.black$result),
           user_rating = ifelse(user_color == "white", games.white$rating, games.black$rating),
@@ -429,25 +431,39 @@ server <- function(input, output, session) {
             TRUE ~ NA
           )
         ) %>%
-        arrange(desc(games.end_time))
+        rowwise() %>%
+        mutate(turns = nrow(df.pgn) / 2) %>%
+        ungroup() %>%
+        arrange(desc(games.end_time)) %>%
+        select(-df.pgn)
+
+      querychat_config_global <- querychat_init(
+        df = select_if(processed_data, function(x) !is.list(x)),
+        table_name = "chess_games_data",
+        greeting = "Ask Chess Insights AI anything related to your games...",
+        data_description = global_data_description,
+        create_chat_func = purrr::partial(
+          ellmer::chat_openai,
+          model = "gpt-4.1",
+          api_key = Sys.getenv("OPENAI_API")
+        )
+        # create_chat_func = purrr::partial(
+        #   ellmer::chat_ollama,
+        #   model = "llama3.2"
+        # )
+      )
+      rv$querychat <- querychat_server("chess_chat", querychat_config_global)
     }
     rv$processed_games <- processed_data
     rv$loading <- FALSE
     removeNotification(id)
-    querychat_config_global <- querychat_init(
-      df = rv$processed_games,
-      table_name = "chess_games_data",
-      greeting = "Ask Chess Insights AI anything related to your games...",
-      data_description = global_data_description,
-      create_chat_func = purrr::partial(
-        ellmer::chat_openai,
-        model = "gpt-4.1",
-        api_key = Sys.getenv("OPENAI_API")
-      )
-    )
-    rv$querychat <- querychat_server("chess_chat", querychat_config_global)
+
     if (is.null(rv$processed_games) || nrow(rv$processed_games) == 0) {
-      rv$error <- "No games found for the selected username and date range."
+      if (!lares::haveInternet()) {
+        rv$error <- "No internet connection."
+      } else {
+        rv$error <- "No games found for the selected username and date range."
+      }
     }
 
     caches <- lares::cache_exists(cache_dir = cache_dir)
@@ -504,6 +520,8 @@ server <- function(input, output, session) {
       br(),
       plotOutput("rating_evolution_plot", height = "400px"),
       br(),
+      plotOutput("freq_moves_plot", height = "400px"),
+      br(),
       plotOutput("rating_diff_plot", height = "300px"),
       br(),
       plotOutput("accuracy_plot", height = "300px")
@@ -528,10 +546,14 @@ server <- function(input, output, session) {
 
   output$latest_rating_box <- renderUI({
     latest_rating <- rv$querychat$df()$user_rating[1]
+    latest_type <- paste(
+      rv$querychat$df()$games.time_class[1],
+      rv$querychat$df()$games.time_control[1]
+    )
     div(
       class = "text-center",
       h2(latest_rating),
-      p("Latest rating*")
+      p(sprintf("Latest rating [%s]*", latest_type))
     )
   })
 
@@ -611,6 +633,38 @@ server <- function(input, output, session) {
       theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
   })
 
+  output$freq_moves_plot <- renderPlot({
+    plot_frequent_moves <- function(df, n_turns = 3, top_moves = 8) {
+      df$df.pgn <- lapply(df$games.pgn, function(x) pgn2data(x, "df")[[1]])
+      firstn <- lapply(df$df.pgn, function(x) x[x$turn <= n_turns, ])
+      firstn <- lapply(seq_along(firstn), function(i) filter(firstn[[i]], color == df$user_color[i]))
+      first_df <- bind_rows(firstn)
+      combs <- freqs(first_df, color, turn) %>% arrange(desc(color), turn)
+      plots <- lapply(1:nrow(combs), function(i) {
+        first_df[first_df$turn == combs$turn[i] & first_df$color == combs$color[i], ] %>%
+          mutate(turn = paste0("#", turn)) %>%
+          freqs(turn, color, move) %>%
+          head(top_moves) %>%
+          ggplot() +
+          geom_col(aes(y = reorder(move, n), x = n, fill = color)) +
+          facet_grid(. ~ turn, scales = "free") +
+          scale_fill_manual(values = c("black" = "black", "white" = "grey90")) +
+          labs(x = NULL, y = NULL, fill = NULL) +
+          lares::scale_x_abbr() +
+          lares::theme_lares(legend = "none")
+      })
+      patchwork::wrap_plots(plots, ncol = n_turns) &
+        patchwork::plot_annotation(
+          theme = lares::theme_lares(),
+          title = sprintf(
+            "%s most frequent moves on first %s turns by color",
+            top_moves, n_turns
+          )
+        )
+    }
+    plot_frequent_moves(rv$querychat$df(), n_turns = 3, top_moves = 8)
+  })
+
   output$accuracy_plot <- renderPlot({
     rv$querychat$df() %>%
       filter(!is.na(user_accuracy)) %>%
@@ -667,7 +721,6 @@ server <- function(input, output, session) {
             // Send the PGN to the server.
             // The input$load_pgn_data event will be triggered with the PGN value.
             Shiny.setInputValue('load_pgn_data', pgn, {priority: 'event'});
-            Shiny.setInputValue('tabs', 'Review', {priority: 'event'}); // Switch to Review tab
           });
         ")
     )
@@ -714,10 +767,10 @@ server <- function(input, output, session) {
           game_state$game <- game
           game_state$current_move_index <- total_game_moves() # Go to end of game by default
           game_state$flipped <- FALSE
-          showNotification("PGN loaded successfully!", type = "message", duration = 3)
+          showNotification("PGN loaded successfully!", type = "message", duration = 5)
         },
         error = function(e) {
-          showNotification(paste("Error parsing PGN:", e$message), type = "error", duration = 5)
+          showNotification(paste("Error parsing PGN:", e$message), type = "error", duration = NULL)
           game_state$game <- NULL
         }
       )
@@ -749,7 +802,7 @@ server <- function(input, output, session) {
       game_state$current_move_index <- game_state$current_move_index + 1
     }
   })
-  
+
   observeEvent(input$flip, {
     game_state$flipped <- !game_state$flipped
   })
@@ -761,7 +814,7 @@ server <- function(input, output, session) {
     if (game_state$current_move_index > 0) {
       current_game_node <- chess::forward(current_game_node, game_state$current_move_index)
     }
-    
+
     # 1. Get the board lines without any color inversion from chess::print
     # We still use unicode = TRUE for nice piece representation
     board_text_lines <- capture.output(print(
@@ -769,15 +822,15 @@ server <- function(input, output, session) {
       unicode = TRUE,
       invert_color = FALSE # Always get the board with default (white at bottom) colors
     ))
-    
+
     # Remove the first line (PGN header or similar)
     board_text_lines <- board_text_lines[-1]
-    
+
     # 2. Conditionally apply your custom flip_board function based on game_state$flipped
     if (game_state$flipped) {
       board_text_lines <- flip_board(board_text_lines)
     }
-    
+
     # 3. Render the processed lines
     pre(paste(board_text_lines, collapse = "\n"), style = "font-size:40px; align:center;")
   })
