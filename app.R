@@ -149,7 +149,8 @@ ui <- fluidPage(
             actionButton("flip", icon("arrows-up-down"), class = "btn btn-info")
           ),
           br(),
-          htmlOutput("chess_board_output")
+          htmlOutput("chess_board_output"),
+          textOutput("chess_board_note")
         ),
         tabPanel(
           "Chess AI",
@@ -209,6 +210,17 @@ server <- function(input, output, session) {
   update_cache_display <- function() {
     rv$available_cache_keys <- get_current_cache_keys()
     updateTextAreaInput(session, "cache_keys_input", value = paste(sort(rv$available_cache_keys), collapse = "\n"))
+  }
+  
+  # Last move's name
+  chess_move_name <- function(x) {
+    if (is.null(x$parent)) {
+      "<Start>" %>% paste0(strrep(" ", 15 - nchar(.)), .)
+    } else {
+      turn <- ifelse(!x$turn(), (x$ply() - 1)/2, (x$ply() - 2)/2) + 1
+      turn <- ifelse(!x$turn(), paste0(turn, ". "), paste0(turn, "... "))
+      paste0("<", turn, x$san(), ">") %>% paste0(strrep(" ", 15 - nchar(.)), .)
+    }
   }
 
   # Initial call to populate the cache list on app start
@@ -772,6 +784,39 @@ server <- function(input, output, session) {
 
     # Render the processed lines using <pre> for monospaced font and preserved whitespace
     pre(paste(board_text_lines, collapse = "\n"), style = "font-size:40px; align:center;")
+  })
+  
+  # A reactive expression to generate the move string
+  output$chess_board_note <- renderText({
+    req(game_state$game)
+    
+    # Check if we are at the end of the game
+    is_end_of_game <- game_state$current_move_index == total_game_moves()
+    
+    # Get the current move and its move number
+    current_move_node <- chess::forward(game_state$game, game_state$current_move_index)
+    
+    # Get the game result from the PGN headers if it's the last move
+    game_result <- game_state$game$headers$get("Result")
+    if (is_end_of_game) {
+      user_result <- switch(
+        game_result,
+        "1-0" = "Win",
+        "0-1" = "Checkmate",
+        "1/2-1/2" = "Draw",
+        "*" = "", # Game not finished
+        "Other"
+      )
+    }
+    
+    # Format the output string
+    move_number <- round((game_state$current_move_index + 0.5) / 2)
+    move_text <- chess_move_name(current_move_node)
+    if (is_end_of_game) {
+      paste0(move_text, " (", user_result, ")")
+    } else {
+      move_text
+    }
   })
 }
 
