@@ -589,6 +589,9 @@ server <- function(input, output, session) {
           # Pass the user_color
           '" data-row-user-color="',
           user_color,
+          # Pass the user_result
+          '" data-row-user-result="',
+          user_result,
           '">Load</button>'
         ),
         games.end_time = format(games.end_time, "%Y-%m-%d %H:%M"),
@@ -616,9 +619,10 @@ server <- function(input, output, session) {
           // It attaches click event listeners to the 'Load' buttons.
           table.on('click', '.load-game-button', function() {
             var pgn = $(this).data('row-pgn'); // Get the PGN from the data attribute
-            var userColor = $(this).data('row-user-color'); // <<< ADDED: Get user_color from data attribute
-            // Send the PGN and user_color as an object to the server.
-            Shiny.setInputValue('load_game_data', { pgn: pgn, userColor: userColor }, {priority: 'event'});
+            var userColor = $(this).data('row-user-color'); // <<< Get user_color from data attribute
+            var userResult = $(this).data('row-user-result'); // <<< Get user_result from data attribute
+            // Send the data as an object to the server.
+            Shiny.setInputValue('load_game_data', { pgn: pgn, userColor: userColor, userResult: userResult }, {priority: 'event'});
           });
         ")
     )
@@ -797,23 +801,13 @@ server <- function(input, output, session) {
     current_move_node <- chess::forward(game_state$game, game_state$current_move_index)
     
     # Get the game result from the PGN headers if it's the last move
-    game_result <- game_state$game$headers$get("Result")
-    if (is_end_of_game) {
-      user_result <- switch(
-        game_result,
-        "1-0" = "Win",
-        "0-1" = "Checkmate",
-        "1/2-1/2" = "Draw",
-        "*" = "", # Game not finished
-        "Other"
-      )
-    }
+    # game_result <- game_state$game$headers$get("Result")
     
     # Format the output string
     move_number <- round((game_state$current_move_index + 0.5) / 2)
     move_text <- chess_move_name(current_move_node)
-    if (is_end_of_game) {
-      paste0(move_text, " (", user_result, ")")
+    if (is_end_of_game && input$load_game_data$userResult != "") {
+      paste0(move_text, " [", input$load_game_data$userResult, "]")
     } else {
       move_text
     }
