@@ -414,6 +414,7 @@ server <- function(input, output, session) {
           turns = 0,
           user_color = ifelse(games.white$username == rv$final_user, "white", "black"), # Use input value for username
           user_result = ifelse(user_color == "white", games.white$result, games.black$result),
+          user_result = ifelse(grepl("abandoned", games.pgn), sprintf("%s (%s)", user_result, "abandoned"), user_result),
           user_rating = ifelse(user_color == "white", games.white$rating, games.black$rating),
           opponent_rating = ifelse(user_color == "white", games.black$rating, games.white$rating),
           rating_diff = user_rating - opponent_rating,
